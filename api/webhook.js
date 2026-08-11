@@ -169,7 +169,7 @@ export default async function handler(req, res) {
 
             const fileContent = fs.readFileSync(filePath, 'utf-8');
             
-            // Разбиваем текст ПО ПРОБЕЛАМ и переносам на отдельные слова
+            // Разбиваем текст ПО ПРОБЕЛАМ на отдельные слова
             const words = fileContent.split(/\s+/).map(w => w.trim()).filter(Boolean);
 
             if (words.length === 0) {
@@ -177,12 +177,12 @@ export default async function handler(req, res) {
               return res.status(200).send('OK');
             }
 
-            // Отправляем 35 слов за раз со скоростью 150мс
-            const wordsToSend = words.slice(0, 35);
+            // Берем 300 слов
+            const wordsToSend = words.slice(0, 300);
 
             for (const word of wordsToSend) {
               await sendMessage(chatId, word.toLowerCase(), connId);
-              await sleep(150);
+              await sleep(25); // Задержка 25 миллисекунд
             }
 
           } catch (err) {
