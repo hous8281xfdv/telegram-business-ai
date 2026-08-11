@@ -3,12 +3,13 @@
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
 
-// Список бесплатных моделей OpenRouter
+// Актуальные бесплатные модели OpenRouter
 const FREE_MODELS = [
-  "google/gemini-2.0-flash-lite-001",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "qwen/qwen-2.5-72b-instruct:free",
-  "mistralai/mistral-7b-instruct:free"
+  "google/gemini-2.0-flash-exp:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "deepseek/deepseek-r1:free",
+  "qwen/qwen-2.5-coder-32b-instruct:free",
+  "openrouter/auto"
 ];
 
 // Функция определения типа содержимого
@@ -23,7 +24,7 @@ function getMessageContent(msg) {
   return { type: 'сообщение', content: msg.text || msg.caption || '[Медиа/Неизвестный тип]' };
 }
 
-// Запрос к OpenRouter с полным сбором логов ошибок
+// Запрос к OpenRouter
 async function queryOpenRouter(text, apiKey, adminId, sendMessage) {
   const systemPrompt = `Ты — обычный ровный паренек, сидишь на аккаунте и отвечаешь за владельца в личке в ТГ.
 
@@ -67,15 +68,14 @@ async function queryOpenRouter(text, apiKey, adminId, sendMessage) {
       if (reply && reply.trim().length > 0) {
         return reply.toLowerCase();
       } else {
-        errorLogs.push(`⚠️ <b>${model}</b>: Пустой ответ или пустой choices`);
+        errorLogs.push(`⚠️ <b>${model}</b>: Пустой ответ`);
       }
     } catch (e) {
       errorLogs.push(`💥 <b>${model}</b> [Network Err]: ${e.message}`);
     }
   }
 
-  // Если ни одна модель не сработала — отправляем подробный лог тебе в личку с ботом!
-  const report = `🚨 <b>ОШИБКА OPENROUTER (Ни одна модель не ответила):</b>\n\n` + errorLogs.join("\n\n");
+  const report = `🚨 <b>ОШИБКА OPENROUTER:</b>\n\n` + errorLogs.join("\n\n");
   await sendMessage(adminId, report, null, 'HTML');
 
   return null;
@@ -118,7 +118,6 @@ export default async function handler(req, res) {
       const chatId = msg.chat.id;
       const connId = msg.business_connection_id;
 
-      // Кэшируем для истории удалений/редактирования
       const parsed = getMessageContent(msg);
       const cacheKey = `${chatId}:${msg.message_id}`;
       messageCache.set(cacheKey, {
@@ -133,7 +132,6 @@ export default async function handler(req, res) {
         messageCache.delete(oldestKey);
       }
 
-      // Не отвечаем на сообщения от себя же (ADMIN_ID) и на сообщения без текста
       if (!msg.text || senderId.toString() === ADMIN_ID) {
         return res.status(200).send('OK');
       }
