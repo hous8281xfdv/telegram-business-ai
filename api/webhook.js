@@ -1,4 +1,9 @@
 // api/webhook.js
+import fs from 'fs';
+import path from 'path';
+
+// Состояние работы бота (включен по умолчанию)
+let isBotActive = true;
 
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
@@ -11,6 +16,9 @@ const FREE_MODELS = [
   "qwen/qwen-2.5-coder-32b-instruct:free",
   "openrouter/auto"
 ];
+
+// Задержка между сообщениями для спама
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Функция определения типа содержимого
 function getMessageContent(msg) {
@@ -114,10 +122,12 @@ export default async function handler(req, res) {
     // 1. НОВОЕ СООБЩЕНИЕ В ЛС
     if (update.business_message) {
       const msg = update.business_message;
+      const text = msg.text ? msg.text.trim() : '';
       const senderId = msg.from.id;
       const chatId = msg.chat.id;
       const connId = msg.business_connection_id;
 
+      // Кэшируем для истории удалений/редактирования
       const parsed = getMessageContent(msg);
       const cacheKey = `${chatId}:${msg.message_id}`;
       messageCache.set(cacheKey, {
@@ -132,11 +142,64 @@ export default async function handler(req, res) {
         messageCache.delete(oldestKey);
       }
 
-      if (!msg.text || senderId.toString() === ADMIN_ID) {
+      // =========================================================
+      // ОБРАБОТКА КОМАНД ОТ ТЕБЯ (ADMIN_ID)
+      // =========================================================
+      if (senderId.toString() === ADMIN_ID) {
+        if (text === '/off') {
+          isBotActive = false;
+          await sendMessage(chatId, "🔴 автоответчик выключен", connId);
+          return res.status(200).send('OK');
+        }
+
+        if (text === '/on') {
+          isBotActive = true;
+          await sendMessage(chatId, "🟢 автоответчик включен", connId);
+          return res.status(200).send('OK');
+        }
+
+        if (text === '/troll') {
+          try {
+            const filePath = path.join(process.cwd(), 'troll.txt');
+            
+            if (!fs.existsSync(filePath)) {
+              await sendMessage(chatId, "⚠️ файл troll.txt не найден в корне проекта", connId);
+              return res.status(200).send('OK');
+            }
+
+            const fileContent = fs.readFileSync(filePath, 'utf-8');
+            const lines = fileContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+            if (lines.length === 0) {
+              await sendMessage(chatId, "⚠️ файл troll.txt пустой", connId);
+              return res.status(200).send('OK');
+            }
+
+            // Отправляем до 10 строк за раз из-за лимитов времени Vercel (10 сек)
+            const linesToSend = lines.slice(0, 10);
+
+            for (const line of linesToSend) {
+              await sendMessage(chatId, line.toLowerCase(), connId);
+              await sleep(700); // пауза 0.7 секунды между сообщениями
+            }
+
+          } catch (err) {
+            await sendMessage(chatId, `⚠️ ошибка при троллинге: ${err.message}`, connId);
+          }
+          return res.status(200).send('OK');
+        }
+
+        // Обычные сообщения от владельца просто игнорируем
         return res.status(200).send('OK');
       }
 
-      const aiReply = await queryOpenRouter(msg.text, OPENROUTER_API_KEY, ADMIN_ID, sendMessage);
+      // Если ИИ-бот выключен командой /off, на сообщения собеседника не отвечаем
+      if (!isBotActive) {
+        return res.status(200).send('OK');
+      }
+
+      // Запрос к ИИ для ответа собеседнику
+      const aiReply = await queryOpenRouter(text, OPENROUTER_API_KEY, ADMIN_ID, sendMessage);
 
       if (aiReply) {
         await sendMessage(chatId, aiReply, connId);
