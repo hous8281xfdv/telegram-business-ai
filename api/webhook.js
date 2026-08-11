@@ -14,28 +14,39 @@ const FREE_MODELS = [
   "openrouter/auto"
 ];
 
-// Вспомогательные функции задержки
+// Вспомогательные функции
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // =========================================================
-// ФУНКЦИИ СИНХРОНИЗАЦИИ СОСТОЯНИЯ МЕЖДУ СЕРВЕРАМИ VERCEL
+// НАДЕЖНАЯ ОНЛАЙН-СИНХРОНИЗАЦИЯ СОСТОЯНИЯ (KVDB)
 // =========================================================
-async function setTrollState(adminId, isActive) {
+function getBucket(token) {
+  return token ? token.replace(/[^a-zA-Z0-9]/g, '').slice(-12) : 'default_bucket';
+}
+
+async function setTrollState(token, active) {
   try {
-    const val = isActive ? 1 : 0;
-    await fetch(`https://api.counterapi.dev/v1/tilking_${adminId}/troll/set?count=${val}`);
+    const bucket = getBucket(token);
+    await fetch(`https://kvdb.io/${bucket}/troll`, {
+      method: 'POST',
+      body: active ? '1' : '0',
+      signal: AbortSignal.timeout(1000)
+    });
   } catch (e) {
-    console.error("Ошибка записи состояния троллинга:", e);
+    console.error("Ошибка записи состояния:", e.message);
   }
 }
 
-async function getTrollState(adminId) {
+async function getTrollState(token) {
   try {
-    const res = await fetch(`https://api.counterapi.dev/v1/tilking_${adminId}/troll/`);
-    const data = await res.json();
-    return data.count === 1;
+    const bucket = getBucket(token);
+    const res = await fetch(`https://kvdb.io/${bucket}/troll`, {
+      signal: AbortSignal.timeout(1000)
+    });
+    const text = await res.text();
+    return text.trim() === '1';
   } catch (e) {
-    return false;
+    return true; // Если база не ответила — продолжаем спам
   }
 }
 
@@ -175,15 +186,15 @@ export default async function handler(req, res) {
           return res.status(200).send('OK');
         }
 
-        // КОМАНДА ОСТАНОВКИ ТРОЛЛИНГА
+        // ВЫКЛЮЧЕНИЕ ТРОЛЛИНГА
         if (text === '/troll off' || text === '/troll of' || text === '/troll stop') {
-          await setTrollState(ADMIN_ID, false);
+          await setTrollState(TELEGRAM_TOKEN, false);
           await sendMessage(chatId, "🛑 троллинг остановлен", connId);
           return res.status(200).send('OK');
         }
 
-        // КОМАНДА ЗАПУСКА ТРОЛЛИНГА
-        if (text === '/troll') {
+        // ВКЛЮЧЕНИЕ ТРОЛЛИНГА
+        if (text === '/troll' || text === '/troll on') {
           try {
             const filePath = path.join(process.cwd(), 'troll.txt');
             
@@ -200,25 +211,27 @@ export default async function handler(req, res) {
               return res.status(200).send('OK');
             }
 
-            const wordsToSend = words.slice(0, 300);
-            
-            // Включаем онлайн-флаг троллинга
-            await setTrollState(ADMIN_ID, true);
+            // Ставим онлайн-флаг "включено" и сразу даем фидбек
+            await setTrollState(TELEGRAM_TOKEN, true);
+            await sendMessage(chatId, "🚀 троллинг запущен", connId);
+
+            // Берём пачку из 40 слов
+            const wordsToSend = words.slice(0, 40);
 
             for (let i = 0; i < wordsToSend.length; i++) {
-              // Каждые 5 слов проверяем онлайн-статус на выключение
-              if (i % 5 === 0) {
-                const active = await getTrollState(ADMIN_ID);
+              // Каждые 3 слова проверяем остановку
+              if (i % 3 === 0) {
+                const active = await getTrollState(TELEGRAM_TOKEN);
                 if (!active) {
-                  break; // Прерываем спам!
+                  break;
                 }
               }
 
               await sendMessage(chatId, wordsToSend[i].toLowerCase(), connId);
-              await sleep(25);
+              await sleep(50);
             }
 
-            await setTrollState(ADMIN_ID, false);
+            await setTrollState(TELEGRAM_TOKEN, false);
 
           } catch (err) {
             await sendMessage(chatId, `⚠️ ошибка при троллинге: ${err.message}`, connId);
