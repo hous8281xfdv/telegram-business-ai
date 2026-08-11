@@ -13,9 +13,8 @@ export default async function handler(req, res) {
   }
 
   const update = req.body;
-  console.log("📩 Входящий вебхук от Telegram:", JSON.stringify(update));
 
-  // Функция отправки сообщений с логированием
+  // Вспомогательная функция отправки
   const sendMessage = async (chatId, text, businessConnectionId = null, parseMode = null) => {
     const payload = { chat_id: chatId, text: text };
     
@@ -27,14 +26,11 @@ export default async function handler(req, res) {
     }
 
     try {
-      const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      const result = await response.json();
-      console.log("📤 Ответ от Telegram API:", JSON.stringify(result));
-      return result;
     } catch (err) {
       console.error("❌ Ошибка отправки в Telegram:", err);
     }
@@ -49,27 +45,24 @@ export default async function handler(req, res) {
       const chatId = msg.chat.id;
       const connId = msg.business_connection_id;
 
-      console.log(`💬 Сообщение от ${senderId} в чате ${chatId}: "${text}"`);
-
       // Игнорируем пустые сообщения и сообщения от ОСНОВНОГО АККАУНТА (ADMIN_ID)
       if (!text || senderId.toString() === ADMIN_ID) {
-        console.log("⏭ Пропущено: Пустой текст или отправлено владельцем аккаунта");
         return res.status(200).send('OK');
       }
 
-      // Запрос к нейросети
       let replyText = "";
+
       try {
         const aiResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+            "Authorization": `Bearer ${OPENROUTER_API_KEY.trim()}`,
             "Content-Type": "application/json",
             "HTTP-Referer": "https://vercel.app",
             "X-Title": "Tilking AI"
           },
           body: JSON.stringify({
-            model: "meta-llama/llama-3.3-70b-instruct:free",
+            model: "openrouter/auto", // Авто-подбор доступной бесплатной модели
             messages: [
               {
                 role: "system",
@@ -81,18 +74,23 @@ export default async function handler(req, res) {
         });
 
         const aiData = await aiResponse.json();
-        console.log("🤖 Ответ от OpenRouter:", JSON.stringify(aiData));
 
-        replyText = aiData.choices?.[0]?.message?.content;
-        if (!replyText) {
-          replyText = "Бля, OpenRouter промолчал или выдал ошибку.";
+        if (!aiResponse.ok) {
+          // Выводим статус и объект ошибки прямо в диалог!
+          const errorMsg = aiData.error?.message || JSON.stringify(aiData);
+          replyText = `⚠️ [Ошибка OpenRouter Code ${aiResponse.status}]\n${errorMsg}`;
+        } else {
+          replyText = aiData.choices?.[0]?.message?.content;
+          if (!replyText) {
+            replyText = `⚠️ [Пустой ответ от OpenRouter]\n${JSON.stringify(aiData)}`;
+          }
         }
+
       } catch (aiErr) {
-        console.error("❌ Ошибка OpenRouter:", aiErr);
-        replyText = "Бля, нейросеть временно недоступна.";
+        replyText = `⚠️ [Ошибка запроса Fetch]: ${aiErr.message}`;
       }
 
-      // Отправляем ответ в ЛС от твоего лица
+      // Отправляем результат (или детализированную ошибку) в ЛС
       await sendMessage(chatId, replyText, connId);
     }
 
@@ -111,7 +109,7 @@ export default async function handler(req, res) {
     }
 
   } catch (globalErr) {
-    console.error("💥 Ошибка вебхука:", globalErr);
+    console.error("💥 Глобальная ошибка:", globalErr);
   }
 
   return res.status(200).send('OK');
