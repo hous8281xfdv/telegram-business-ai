@@ -18,35 +18,27 @@ const FREE_MODELS = [
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // =========================================================
-// НАДЕЖНАЯ ОНЛАЙН-СИНХРОНИЗАЦИЯ СОСТОЯНИЯ (KVDB)
+// ХРАНЕНИЕ СОСТОЯНИЯ ЧЕРЕЗ TELEGRAM API (100% НАДЕЖНО)
 // =========================================================
-function getBucket(token) {
-  return token ? token.replace(/[^a-zA-Z0-9]/g, '').slice(-12) : 'default_bucket';
-}
-
 async function setTrollState(token, active) {
   try {
-    const bucket = getBucket(token);
-    await fetch(`https://kvdb.io/${bucket}/troll`, {
+    await fetch(`https://api.telegram.org/bot${token}/setMyShortDescription`, {
       method: 'POST',
-      body: active ? '1' : '0',
-      signal: AbortSignal.timeout(1000)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ short_description: active ? 'troll_on' : 'troll_off' })
     });
   } catch (e) {
-    console.error("Ошибка записи состояния:", e.message);
+    console.error("Ошибка записи состояния в Telegram:", e.message);
   }
 }
 
 async function getTrollState(token) {
   try {
-    const bucket = getBucket(token);
-    const res = await fetch(`https://kvdb.io/${bucket}/troll`, {
-      signal: AbortSignal.timeout(1000)
-    });
-    const text = await res.text();
-    return text.trim() === '1';
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMyShortDescription`);
+    const data = await res.json();
+    return data.result?.short_description === 'troll_on';
   } catch (e) {
-    return true; // Если база не ответила — продолжаем спам
+    return true; // При сбое сети продолжаем спам
   }
 }
 
@@ -186,14 +178,14 @@ export default async function handler(req, res) {
           return res.status(200).send('OK');
         }
 
-        // ВЫКЛЮЧЕНИЕ ТРОЛЛИНГА
+        // ОСТАНОВКА ТРОЛЛИНГА
         if (text === '/troll off' || text === '/troll of' || text === '/troll stop') {
           await setTrollState(TELEGRAM_TOKEN, false);
           await sendMessage(chatId, "🛑 троллинг остановлен", connId);
           return res.status(200).send('OK');
         }
 
-        // ВКЛЮЧЕНИЕ ТРОЛЛИНГА
+        // ЗАПУСК ТРОЛЛИНГА
         if (text === '/troll' || text === '/troll on') {
           try {
             const filePath = path.join(process.cwd(), 'troll.txt');
@@ -211,24 +203,24 @@ export default async function handler(req, res) {
               return res.status(200).send('OK');
             }
 
-            // Ставим онлайн-флаг "включено" и сразу даем фидбек
+            // Ставим флаг работы
             await setTrollState(TELEGRAM_TOKEN, true);
             await sendMessage(chatId, "🚀 троллинг запущен", connId);
 
-            // Берём пачку из 40 слов
-            const wordsToSend = words.slice(0, 40);
+            // Порция слов для отправки
+            const wordsToSend = words.slice(0, 35);
 
             for (let i = 0; i < wordsToSend.length; i++) {
-              // Каждые 3 слова проверяем остановку
-              if (i % 3 === 0) {
+              // Каждые 2 слова проверяем, не отправлена ли команда остановки
+              if (i > 0 && i % 2 === 0) {
                 const active = await getTrollState(TELEGRAM_TOKEN);
                 if (!active) {
-                  break;
+                  break; // Прерываем спам
                 }
               }
 
               await sendMessage(chatId, wordsToSend[i].toLowerCase(), connId);
-              await sleep(50);
+              await sleep(120); // Задержка для предотвращения лимитов Telegram
             }
 
             await setTrollState(TELEGRAM_TOKEN, false);
