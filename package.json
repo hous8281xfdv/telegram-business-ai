@@ -1,0 +1,9 @@
+{
+  "name": "tilking-ai",
+  "version": "1.0.0",
+  "description": "Telegram Business AI Autoresponder",
+  "type": "module",
+  "scripts": {
+    "start": "node api/webhook.js"
+  }
+}
