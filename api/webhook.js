@@ -1,9 +1,17 @@
 // api/webhook.js
 
-// Оперативный кэш в памяти для хранения истории сообщений (для слежки за удалением/изменением)
+// Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
 
-// Функция определения содержимого сообщения
+// Список бесплатных моделей OpenRouter (переключаются автоматически, если какая-то упала)
+const FREE_MODELS = [
+  "google/gemini-2.0-flash-lite-001",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "qwen/qwen-2.5-72b-instruct:free",
+  "mistralai/mistral-7b-instruct:free"
+];
+
+// Функция определения типа содержимого
 function getMessageContent(msg) {
   if (msg.text) return { type: 'текст', content: msg.text };
   if (msg.voice) return { type: 'голосовое сообщение', content: '🎤 [Голосовое сообщение]' };
@@ -13,6 +21,51 @@ function getMessageContent(msg) {
   if (msg.document) return { type: 'файл', content: `📁 [Файл]: ${msg.document.file_name || ''}` };
   if (msg.audio) return { type: 'аудио', content: '🎵 [Аудиозапись]' };
   return { type: 'сообщение', content: msg.text || msg.caption || '[Медиа/Неизвестный тип]' };
+}
+
+// Умный запрос к OpenRouter с авто-переключением рабочих моделей
+async function queryOpenRouter(text, apiKey) {
+  const systemPrompt = `Ты — обычный ровный паренек, сидишь на аккаунте и отвечаешь за владельца в личке в ТГ.
+
+ПРАВИЛА ТВОЕГО СТИЛЯ И ОБЩЕНИЯ:
+1. Пиши ВСЁ исключительно с маленькой буквы (без заглавных букв вообще).
+2. НЕ пиши как душный умник или бот: не ставь точки в конце предложений, минимизируй запятые и сложную пунктуацию.
+3. Общайся простым разговорным языком (как обычные пацаны переписываются в ТГ). Без воды, кратко и строго по теме вопроса.
+4. Пофигистичный, простой и расслабленный стиль общения, но отвечай по сути того, что у тебя спросили.
+5. Никогда не называй себя ИИ, ботом или Tilking AI. Ты просто чел.`;
+
+  for (const model of FREE_MODELS) {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey.trim()}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://vercel.app",
+          "X-Title": "TG Userbot"
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: text }
+          ]
+        })
+      });
+
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      const reply = data.choices?.[0]?.message?.content;
+      if (reply && reply.trim().length > 0) {
+        return reply.toLowerCase();
+      }
+    } catch (e) {
+      console.error(`Модель ${model} не ответила:`, e);
+    }
+  }
+
+  return null; // Если вообще все модели легли
 }
 
 export default async function handler(req, res) {
@@ -28,7 +81,6 @@ export default async function handler(req, res) {
 
   const update = req.body;
 
-  // Функция отправки сообщений
   const sendMessage = async (chatId, text, businessConnectionId = null, parseMode = null) => {
     const payload = { chat_id: chatId, text: text };
     if (businessConnectionId) payload.business_connection_id = businessConnectionId;
@@ -46,16 +98,14 @@ export default async function handler(req, res) {
   };
 
   try {
-    // =================================================================
     // 1. НОВОЕ СООБЩЕНИЕ В ЛС
-    // =================================================================
     if (update.business_message) {
       const msg = update.business_message;
       const senderId = msg.from.id;
       const chatId = msg.chat.id;
       const connId = msg.business_connection_id;
 
-      // 💾 Сохраняем в память для истории (чтобы поймать при изменении или удалении)
+      // Кэшируем для истории удалений/редактирования
       const parsed = getMessageContent(msg);
       const cacheKey = `${chatId}:${msg.message_id}`;
       messageCache.set(cacheKey, {
@@ -65,70 +115,34 @@ export default async function handler(req, res) {
         senderId: senderId
       });
 
-      // Очистка памяти, если сообщений слишком много
       if (messageCache.size > 1000) {
         const oldestKey = messageCache.keys().next().value;
         messageCache.delete(oldestKey);
       }
 
-      // Игнорим сообщения от владельца аккаунта (ADMIN_ID) и без текста
+      // Не отвечаем на сообщения от себя же (ADMIN_ID) и на сообщения без текста
       if (!msg.text || senderId.toString() === ADMIN_ID) {
         return res.status(200).send('OK');
       }
 
-      let replyText = "";
-      try {
-        const aiResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${OPENROUTER_API_KEY.trim()}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://vercel.app",
-            "X-Title": "TG Userbot"
-          },
-          body: JSON.stringify({
-            model: "meta-llama/llama-3.3-70b-instruct:free",
-            messages: [
-              {
-                role: "system",
-                content: `Ты — обычный ровный паренек, сидишь на аккаунте и отвечаешь за владельца в личке в ТГ.
+      const aiReply = await queryOpenRouter(msg.text, OPENROUTER_API_KEY);
 
-ПРАВИЛА ТВОЕГО СТИЛЯ И ОБЩЕНИЯ:
-1. Пиши ВСЁ исключительно с маленькой буквы (без заглавных букв вообще).
-2. НЕ пиши как душный умник или бот: не ставь точки в конце предложений, минимизируй запятые и сложную пунктуацию.
-3. Общайся простым разговорным языком (как обычные пацаны переписываются в ТГ). Без воды, кратко и строго по теме вопроса.
-4. Пофигистичный, простой и расслабленный стиль общения, но отвечай по сути того, что у тебя спросили.
-5. Никогда не называй себя ИИ, ботом или Tilking AI. Ты просто чел.`
-              },
-              { role: "user", content: msg.text }
-            ]
-          })
-        });
-
-        const aiData = await aiResponse.json();
-
-        if (aiResponse.ok && aiData.choices?.[0]?.message?.content) {
-          // Принудительно переводим весь ответ в нижний регистр для простого стиля
-          replyText = aiData.choices[0].message.content.toLowerCase();
-        } else {
-          replyText = "да сорян инет тупит чето";
-        }
-      } catch (aiErr) {
-        replyText = "бля ща затуп какой то позже отвечу";
+      if (aiReply) {
+        await sendMessage(chatId, aiReply, connId);
+      } else {
+        // Если вообще все нейронки упали — тихо логируем админу, в чат пишем короткую реакцию
+        await sendMessage(ADMIN_ID, "⚠️ Все модели OpenRouter временно недоступны.", null);
+        await sendMessage(chatId, "хз ща инет затупил немного", connId);
       }
-
-      await sendMessage(chatId, replyText, connId);
     }
 
-    // =================================================================
-    // 2. ИЗМЕНЕНИЕ СООБЩЕНИЯ В ЛС
-    // =================================================================
+    // 2. ИЗМЕНЕНИЕ СООБЩЕНИЯ (ПОКАЗЫВАЕТ СТАРОЕ И НОВОЕ)
     else if (update.edited_business_message) {
       const msg = update.edited_business_message;
       const cacheKey = `${msg.chat.id}:${msg.message_id}`;
       const oldMsg = messageCache.get(cacheKey);
 
-      const oldText = oldMsg ? oldMsg.text : '<i>(сообщение не успело сохраниться в кэше)</i>';
+      const oldText = oldMsg ? oldMsg.text : '<i>(сообщение было отправлено до запуска бота)</i>';
       const newText = msg.text || getMessageContent(msg).content;
       const senderName = msg.from?.first_name || 'Собеседник';
 
@@ -137,7 +151,6 @@ export default async function handler(req, res) {
                    `Было: <s>${oldText}</s>\n` +
                    `Стало: <b>${newText}</b>`;
 
-      // Обновляем данные в кэше
       messageCache.set(cacheKey, {
         text: newText,
         type: getMessageContent(msg).type,
@@ -145,13 +158,10 @@ export default async function handler(req, res) {
         senderId: msg.from?.id
       });
 
-      // Лог админу
       await sendMessage(ADMIN_ID, note, null, 'HTML');
     }
 
-    // =================================================================
-    // 3. УДАЛЕНИЕ СООБЩЕНИЯ В ЛС
-    // =================================================================
+    // 3. УДАЛЕНИЕ СООБЩЕНИЯ (ПОКАЗЫВАЕТ ЧТО ИМЕННО УДАЛИЛИ)
     else if (update.deleted_business_messages) {
       const msg = update.deleted_business_messages;
       const chatId = msg.chat.id;
@@ -169,11 +179,10 @@ export default async function handler(req, res) {
           messageCache.delete(cacheKey);
         } else {
           note = `🗑 <b>Удалено сообщение!</b>\n` +
-                 `<b>ID сообщения:</b> ${msgId}\n` +
-                 `<i>(Текст не сохранился, так как сообщение пришло до запуска бота)</i>`;
+                 `<b>ID:</b> ${msgId}\n` +
+                 `<i>(Сообщение было отправлено до запуска бота)</i>`;
         }
 
-        // Лог админу
         await sendMessage(ADMIN_ID, note, null, 'HTML');
       }
     }
