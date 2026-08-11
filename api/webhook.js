@@ -3,7 +3,7 @@
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
 
-// Список бесплатных моделей OpenRouter (переключаются автоматически, если какая-то упала)
+// Список бесплатных моделей OpenRouter
 const FREE_MODELS = [
   "google/gemini-2.0-flash-lite-001",
   "meta-llama/llama-3.3-70b-instruct:free",
@@ -23,8 +23,8 @@ function getMessageContent(msg) {
   return { type: 'сообщение', content: msg.text || msg.caption || '[Медиа/Неизвестный тип]' };
 }
 
-// Умный запрос к OpenRouter с авто-переключением рабочих моделей
-async function queryOpenRouter(text, apiKey) {
+// Запрос к OpenRouter с полным сбором логов ошибок
+async function queryOpenRouter(text, apiKey, adminId, sendMessage) {
   const systemPrompt = `Ты — обычный ровный паренек, сидишь на аккаунте и отвечаешь за владельца в личке в ТГ.
 
 ПРАВИЛА ТВОЕГО СТИЛЯ И ОБЩЕНИЯ:
@@ -33,6 +33,8 @@ async function queryOpenRouter(text, apiKey) {
 3. Общайся простым разговорным языком (как обычные пацаны переписываются в ТГ). Без воды, кратко и строго по теме вопроса.
 4. Пофигистичный, простой и расслабленный стиль общения, но отвечай по сути того, что у тебя спросили.
 5. Никогда не называй себя ИИ, ботом или Tilking AI. Ты просто чел.`;
+
+  const errorLogs = [];
 
   for (const model of FREE_MODELS) {
     try {
@@ -53,19 +55,30 @@ async function queryOpenRouter(text, apiKey) {
         })
       });
 
-      if (!res.ok) continue;
-
       const data = await res.json();
+
+      if (!res.ok) {
+        const errDetail = data.error?.message || JSON.stringify(data);
+        errorLogs.push(`❌ <b>${model}</b> [HTTP ${res.status}]: ${errDetail}`);
+        continue;
+      }
+
       const reply = data.choices?.[0]?.message?.content;
       if (reply && reply.trim().length > 0) {
         return reply.toLowerCase();
+      } else {
+        errorLogs.push(`⚠️ <b>${model}</b>: Пустой ответ или пустой choices`);
       }
     } catch (e) {
-      console.error(`Модель ${model} не ответила:`, e);
+      errorLogs.push(`💥 <b>${model}</b> [Network Err]: ${e.message}`);
     }
   }
 
-  return null; // Если вообще все модели легли
+  // Если ни одна модель не сработала — отправляем подробный лог тебе в личку с ботом!
+  const report = `🚨 <b>ОШИБКА OPENROUTER (Ни одна модель не ответила):</b>\n\n` + errorLogs.join("\n\n");
+  await sendMessage(adminId, report, null, 'HTML');
+
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -125,18 +138,16 @@ export default async function handler(req, res) {
         return res.status(200).send('OK');
       }
 
-      const aiReply = await queryOpenRouter(msg.text, OPENROUTER_API_KEY);
+      const aiReply = await queryOpenRouter(msg.text, OPENROUTER_API_KEY, ADMIN_ID, sendMessage);
 
       if (aiReply) {
         await sendMessage(chatId, aiReply, connId);
       } else {
-        // Если вообще все нейронки упали — тихо логируем админу, в чат пишем короткую реакцию
-        await sendMessage(ADMIN_ID, "⚠️ Все модели OpenRouter временно недоступны.", null);
         await sendMessage(chatId, "хз ща инет затупил немного", connId);
       }
     }
 
-    // 2. ИЗМЕНЕНИЕ СООБЩЕНИЯ (ПОКАЗЫВАЕТ СТАРОЕ И НОВОЕ)
+    // 2. ИЗМЕНЕНИЕ СООБЩЕНИЯ
     else if (update.edited_business_message) {
       const msg = update.edited_business_message;
       const cacheKey = `${msg.chat.id}:${msg.message_id}`;
@@ -161,7 +172,7 @@ export default async function handler(req, res) {
       await sendMessage(ADMIN_ID, note, null, 'HTML');
     }
 
-    // 3. УДАЛЕНИЕ СООБЩЕНИЯ (ПОКАЗЫВАЕТ ЧТО ИМЕННО УДАЛИЛИ)
+    // 3. УДАЛЕНИЕ СООБЩЕНИЯ
     else if (update.deleted_business_messages) {
       const msg = update.deleted_business_messages;
       const chatId = msg.chat.id;
