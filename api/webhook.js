@@ -2,10 +2,6 @@
 import fs from 'fs';
 import path from 'path';
 
-// Состояние работы бота
-let isBotActive = true;
-let isTrolling = false; // Флаг состояния троллинга
-
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
 
@@ -18,8 +14,30 @@ const FREE_MODELS = [
   "openrouter/auto"
 ];
 
-// Задержка в миллисекундах
+// Вспомогательные функции задержки
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// =========================================================
+// ФУНКЦИИ СИНХРОНИЗАЦИИ СОСТОЯНИЯ МЕЖДУ СЕРВЕРАМИ VERCEL
+// =========================================================
+async function setTrollState(adminId, isActive) {
+  try {
+    const val = isActive ? 1 : 0;
+    await fetch(`https://api.counterapi.dev/v1/tilking_${adminId}/troll/set?count=${val}`);
+  } catch (e) {
+    console.error("Ошибка записи состояния троллинга:", e);
+  }
+}
+
+async function getTrollState(adminId) {
+  try {
+    const res = await fetch(`https://api.counterapi.dev/v1/tilking_${adminId}/troll/`);
+    const data = await res.json();
+    return data.count === 1;
+  } catch (e) {
+    return false;
+  }
+}
 
 // Определение типа содержимого
 function getMessageContent(msg) {
@@ -148,25 +166,23 @@ export default async function handler(req, res) {
       // =========================================================
       if (senderId.toString() === ADMIN_ID) {
         if (text === '/off') {
-          isBotActive = false;
           await sendMessage(chatId, "🔴 автоответчик выключен", connId);
           return res.status(200).send('OK');
         }
 
         if (text === '/on') {
-          isBotActive = true;
           await sendMessage(chatId, "🟢 автоответчик включен", connId);
           return res.status(200).send('OK');
         }
 
-        // ВЫКЛЮЧЕНИЕ ТРОЛЛИНГА
+        // КОМАНДА ОСТАНОВКИ ТРОЛЛИНГА
         if (text === '/troll off' || text === '/troll of' || text === '/troll stop') {
-          isTrolling = false;
+          await setTrollState(ADMIN_ID, false);
           await sendMessage(chatId, "🛑 троллинг остановлен", connId);
           return res.status(200).send('OK');
         }
 
-        // ВКЛЮЧЕНИЕ ТРОЛЛИНГА
+        // КОМАНДА ЗАПУСКА ТРОЛЛИНГА
         if (text === '/troll') {
           try {
             const filePath = path.join(process.cwd(), 'troll.txt');
@@ -185,18 +201,24 @@ export default async function handler(req, res) {
             }
 
             const wordsToSend = words.slice(0, 300);
-            isTrolling = true;
+            
+            // Включаем онлайн-флаг троллинга
+            await setTrollState(ADMIN_ID, true);
 
-            for (const word of wordsToSend) {
-              // Если во время работы пришла команда /troll off — мгновенно прерываем
-              if (!isTrolling) {
-                break;
+            for (let i = 0; i < wordsToSend.length; i++) {
+              // Каждые 5 слов проверяем онлайн-статус на выключение
+              if (i % 5 === 0) {
+                const active = await getTrollState(ADMIN_ID);
+                if (!active) {
+                  break; // Прерываем спам!
+                }
               }
-              await sendMessage(chatId, word.toLowerCase(), connId);
+
+              await sendMessage(chatId, wordsToSend[i].toLowerCase(), connId);
               await sleep(25);
             }
 
-            isTrolling = false;
+            await setTrollState(ADMIN_ID, false);
 
           } catch (err) {
             await sendMessage(chatId, `⚠️ ошибка при троллинге: ${err.message}`, connId);
@@ -207,10 +229,7 @@ export default async function handler(req, res) {
         return res.status(200).send('OK');
       }
 
-      if (!isBotActive) {
-        return res.status(200).send('OK');
-      }
-
+      // Отправка ответа ИИ
       const aiReply = await queryOpenRouter(text, OPENROUTER_API_KEY, ADMIN_ID, sendMessage);
 
       if (aiReply) {
