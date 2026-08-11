@@ -4,6 +4,7 @@ import path from 'path';
 
 // Состояние работы бота
 let isBotActive = true;
+let isTrolling = false; // Флаг состояния троллинга
 
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
@@ -158,6 +159,14 @@ export default async function handler(req, res) {
           return res.status(200).send('OK');
         }
 
+        // ВЫКЛЮЧЕНИЕ ТРОЛЛИНГА
+        if (text === '/troll off' || text === '/troll of' || text === '/troll stop') {
+          isTrolling = false;
+          await sendMessage(chatId, "🛑 троллинг остановлен", connId);
+          return res.status(200).send('OK');
+        }
+
+        // ВКЛЮЧЕНИЕ ТРОЛЛИНГА
         if (text === '/troll') {
           try {
             const filePath = path.join(process.cwd(), 'troll.txt');
@@ -168,8 +177,6 @@ export default async function handler(req, res) {
             }
 
             const fileContent = fs.readFileSync(filePath, 'utf-8');
-            
-            // Разбиваем текст ПО ПРОБЕЛАМ на отдельные слова
             const words = fileContent.split(/\s+/).map(w => w.trim()).filter(Boolean);
 
             if (words.length === 0) {
@@ -177,13 +184,19 @@ export default async function handler(req, res) {
               return res.status(200).send('OK');
             }
 
-            // Берем 300 слов
             const wordsToSend = words.slice(0, 300);
+            isTrolling = true;
 
             for (const word of wordsToSend) {
+              // Если во время работы пришла команда /troll off — мгновенно прерываем
+              if (!isTrolling) {
+                break;
+              }
               await sendMessage(chatId, word.toLowerCase(), connId);
-              await sleep(25); // Задержка 25 миллисекунд
+              await sleep(25);
             }
+
+            isTrolling = false;
 
           } catch (err) {
             await sendMessage(chatId, `⚠️ ошибка при троллинге: ${err.message}`, connId);
