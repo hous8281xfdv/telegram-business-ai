@@ -2,13 +2,13 @@
 import fs from 'fs';
 import path from 'path';
 
-// Состояние работы бота (включен по умолчанию)
+// Состояние работы бота
 let isBotActive = true;
 
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
 
-// Актуальные бесплатные модели OpenRouter
+// Бесплатные модели OpenRouter
 const FREE_MODELS = [
   "google/gemini-2.0-flash-exp:free",
   "meta-llama/llama-3.1-8b-instruct:free",
@@ -17,10 +17,10 @@ const FREE_MODELS = [
   "openrouter/auto"
 ];
 
-// Задержка между сообщениями для спама
+// Задержка в миллисекундах
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Функция определения типа содержимого
+// Определение типа содержимого
 function getMessageContent(msg) {
   if (msg.text) return { type: 'текст', content: msg.text };
   if (msg.voice) return { type: 'голосовое сообщение', content: '🎤 [Голосовое сообщение]' };
@@ -127,7 +127,7 @@ export default async function handler(req, res) {
       const chatId = msg.chat.id;
       const connId = msg.business_connection_id;
 
-      // Кэшируем для истории удалений/редактирования
+      // Кэшируем сообщение
       const parsed = getMessageContent(msg);
       const cacheKey = `${chatId}:${msg.message_id}`;
       messageCache.set(cacheKey, {
@@ -143,7 +143,7 @@ export default async function handler(req, res) {
       }
 
       // =========================================================
-      // ОБРАБОТКА КОМАНД ОТ ТЕБЯ (ADMIN_ID)
+      // ОБРАБОТКА КОМАНД ВЛАДЕЛЬЦА (ADMIN_ID)
       // =========================================================
       if (senderId.toString() === ADMIN_ID) {
         if (text === '/off') {
@@ -168,19 +168,21 @@ export default async function handler(req, res) {
             }
 
             const fileContent = fs.readFileSync(filePath, 'utf-8');
-            const lines = fileContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            
+            // Разбиваем текст ПО ПРОБЕЛАМ и переносам на отдельные слова
+            const words = fileContent.split(/\s+/).map(w => w.trim()).filter(Boolean);
 
-            if (lines.length === 0) {
+            if (words.length === 0) {
               await sendMessage(chatId, "⚠️ файл troll.txt пустой", connId);
               return res.status(200).send('OK');
             }
 
-            // Отправляем до 10 строк за раз из-за лимитов времени Vercel (10 сек)
-            const linesToSend = lines.slice(0, 10);
+            // Отправляем 35 слов за раз со скоростью 150мс
+            const wordsToSend = words.slice(0, 35);
 
-            for (const line of linesToSend) {
-              await sendMessage(chatId, line.toLowerCase(), connId);
-              await sleep(700); // пауза 0.7 секунды между сообщениями
+            for (const word of wordsToSend) {
+              await sendMessage(chatId, word.toLowerCase(), connId);
+              await sleep(150);
             }
 
           } catch (err) {
@@ -189,16 +191,13 @@ export default async function handler(req, res) {
           return res.status(200).send('OK');
         }
 
-        // Обычные сообщения от владельца просто игнорируем
         return res.status(200).send('OK');
       }
 
-      // Если ИИ-бот выключен командой /off, на сообщения собеседника не отвечаем
       if (!isBotActive) {
         return res.status(200).send('OK');
       }
 
-      // Запрос к ИИ для ответа собеседнику
       const aiReply = await queryOpenRouter(text, OPENROUTER_API_KEY, ADMIN_ID, sendMessage);
 
       if (aiReply) {
