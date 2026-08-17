@@ -1,9 +1,12 @@
-// api/webhook.js
 import fs from 'fs';
 import path from 'path';
 
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
+
+// Отслеживание активности владельца аккаунта (3 минуты = 180 000 мс)
+let lastAdminActivity = 0;
+const ONLINE_COOLDOWN_MS = 3 * 60 * 1000;
 
 // Бесплатные модели OpenRouter
 const FREE_MODELS = [
@@ -165,9 +168,12 @@ export default async function handler(req, res) {
       }
 
       // =========================================================
-      // ОБРАБОТКА КОМАНД ВЛАДЕЛЬЦА (ADMIN_ID)
+      // ОБРАБОТКА СООБЩЕНИЙ ВЛАДЕЛЬЦА (ADMIN_ID)
       // =========================================================
       if (senderId.toString() === ADMIN_ID) {
+        // Запоминаем время твоей активности в сети
+        lastAdminActivity = Date.now();
+
         if (text === '/off') {
           await sendMessage(chatId, "🔴 автоответчик выключен", connId);
           return res.status(200).send('OK');
@@ -231,6 +237,15 @@ export default async function handler(req, res) {
           return res.status(200).send('OK');
         }
 
+        return res.status(200).send('OK');
+      }
+
+      // =========================================================
+      // ПРОВЕРКА: ЕСЛИ ВЛАДЕЛЕЦ АКТИВЕН В СЕТИ — БОТ МОЛЧИТ
+      // =========================================================
+      const isUserRecentlyActive = (Date.now() - lastAdminActivity) < ONLINE_COOLDOWN_MS;
+      if (isUserRecentlyActive) {
+        console.log("Владелец сам ведет переписку в сети, ИИ молчит.");
         return res.status(200).send('OK');
       }
 
