@@ -17,31 +17,72 @@ const FREE_MODELS = [
   "openrouter/auto"
 ];
 
+// ПРОМПТЫ ДЛЯ 3 МАНЕР РЕЧИ
+const SYSTEM_PROMPTS = {
+  default: `Ты — обычный ровный паренек, сидишь на аккаунте и отвечаешь за владельца в личке в ТГ.
+
+ПРАВИЛА ТВОЕГО СТИЛЯ И ОБЩЕНИЯ:
+1. Пиши ВСЁ исключительно с маленькой буквы (без заглавных букв вообще).
+2. НЕ пиши как душный умник или бот: не ставь точки в конце предложений, минимизируй запятые и сложную пунктуацию.
+3. Общайся простым разговорным языком (как обычные пацаны переписываются в ТГ). Без воды, кратко и строго по теме вопроса.
+4. Пофигистичный, простой и расслабленный стиль общения, но отвечай по сути того, что у тебя спросили.
+5. Никогда не называй себя ИИ, ботом или Tilking AI. Ты просто чел.`,
+
+  anime: `Ты — анимешник, отаку и няша, сидишь на аккаунте и отвечаешь за владельца в личке в ТГ.
+
+ПРАВИЛА ТВОЕГО СТИЛЯ И ОБЩЕНИЯ:
+1. Пиши ВСЁ исключительно с маленькой буквы (без заглавных букв вообще).
+2. Активно используй анимешный сленг и эмотиконы (ня, десу, охайо, uwu, >_<, ^_^, тян, кун, бака).
+3. Общайся кавайно, эмоционально, весело, слегка стеснительно, но при этом давай ответ по сути того, что у тебя спросили.
+4. Не ставь точки в конце предложений и избегай сложной пунктуации.
+5. Никогда не называй себя ИИ или ботом. Ты просто чел.`,
+
+  kid: `Ты — дерзкий, крутой 13-летний пацанчик, сидишь на аккаунте и отвечаешь за владельца в личке в ТГ.
+
+ПРАВИЛА ТВОЕГО СТИЛЯ И ОБЩЕНИЯ:
+1. Пиши ВСЁ исключительно с маленькой буквы (без заглавных букв вообще).
+2. Используй школьный и молодежный сленг (пон, кринж, база, соло, по фактам, чел, эщкере, ауф, го, пруф).
+3. Общайся выпендрежно, максимально дерзко и круто, словно ты самый жесткий на районе и в классе, но при этом давай ответ по сути вопроса.
+4. Никаких точек в конце предложений и никакой сложной пунктуации.
+5. Никогда не называй себя ИИ или ботом.`
+};
+
 // Вспомогательные функции
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // =========================================================
 // ХРАНЕНИЕ СОСТОЯНИЯ ЧЕРЕЗ TELEGRAM API (100% НАДЕЖНО)
+// Формат в short_description: "troll_on:anime" или "troll_off:default"
 // =========================================================
-async function setTrollState(token, active) {
-  try {
-    await fetch(`https://api.telegram.org/bot${token}/setMyShortDescription`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ short_description: active ? 'troll_on' : 'troll_off' })
-    });
-  } catch (e) {
-    console.error("Ошибка записи состояния в Telegram:", e.message);
-  }
-}
-
-async function getTrollState(token) {
+async function getState(token) {
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/getMyShortDescription`);
     const data = await res.json();
-    return data.result?.short_description === 'troll_on';
+    const desc = data.result?.short_description || "troll_off:default";
+    const parts = desc.split(":");
+    return {
+      troll: parts[0] === 'troll_on',
+      style: parts[1] || 'default'
+    };
   } catch (e) {
-    return true; // При сбое сети продолжаем спам
+    return { troll: false, style: 'default' };
+  }
+}
+
+async function setState(token, { troll, style }) {
+  try {
+    const current = await getState(token);
+    const newTroll = troll !== undefined ? troll : current.troll;
+    const newStyle = style !== undefined ? style : current.style;
+    const value = `${newTroll ? 'troll_on' : 'troll_off'}:${newStyle}`;
+
+    await fetch(`https://api.telegram.org/bot${token}/setMyShortDescription`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ short_description: value })
+    });
+  } catch (e) {
+    console.error("Ошибка записи состояния в Telegram:", e.message);
   }
 }
 
@@ -57,17 +98,9 @@ function getMessageContent(msg) {
   return { type: 'сообщение', content: msg.text || msg.caption || '[Медиа/Неизвестный тип]' };
 }
 
-// Запрос к OpenRouter
-async function queryOpenRouter(text, apiKey, adminId, sendMessage) {
-  const systemPrompt = `Ты — обычный ровный паренек, сидишь на аккаунте и отвечаешь за владельца в личке в ТГ.
-
-ПРАВИЛА ТВОЕГО СТИЛЯ И ОБЩЕНИЯ:
-1. Пиши ВСЁ исключительно с маленькой буквы (без заглавных букв вообще).
-2. НЕ пиши как душный умник или бот: не ставь точки в конце предложений, минимизируй запятые и сложную пунктуацию.
-3. Общайся простым разговорным языком (как обычные пацаны переписываются в ТГ). Без воды, кратко и строго по теме вопроса.
-4. Пофигистичный, простой и расслабленный стиль общения, но отвечай по сути того, что у тебя спросили.
-5. Никогда не называй себя ИИ, ботом или Tilking AI. Ты просто чел.`;
-
+// Запрос к OpenRouter с учетом манеры речи
+async function queryOpenRouter(text, apiKey, adminId, sendMessage, style = 'default') {
+  const systemPrompt = SYSTEM_PROMPTS[style] || SYSTEM_PROMPTS.default;
   const errorLogs = [];
 
   for (const model of FREE_MODELS) {
@@ -127,10 +160,11 @@ export default async function handler(req, res) {
 
   const update = req.body;
 
-  const sendMessage = async (chatId, text, businessConnectionId = null, parseMode = null) => {
+  const sendMessage = async (chatId, text, businessConnectionId = null, parseMode = null, replyMarkup = null) => {
     const payload = { chat_id: chatId, text: text };
     if (businessConnectionId) payload.business_connection_id = businessConnectionId;
     if (parseMode) payload.parse_mode = parseMode;
+    if (replyMarkup) payload.reply_markup = replyMarkup;
 
     try {
       await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -144,6 +178,40 @@ export default async function handler(req, res) {
   };
 
   try {
+    // =========================================================
+    // ОБРАБОТКА НАЖАТИЯ НА ИНТЕРАКТИВНЫЕ КНОПКИ (CALLBACK QUERY)
+    // =========================================================
+    if (update.callback_query) {
+      const cb = update.callback_query;
+      const senderId = cb.from.id.toString();
+
+      if (senderId === ADMIN_ID) {
+        const data = cb.data;
+        if (data.startsWith('style_')) {
+          const newStyle = data.replace('style_', '');
+          await setState(TELEGRAM_TOKEN, { style: newStyle });
+
+          const names = {
+            default: "обычный пацан 😎",
+            anime: "анимешник 🌸",
+            kid: "дерзкий пацанчик (13 лет) 🔥"
+          };
+          const selectedName = names[newStyle] || newStyle;
+
+          // Всплывающее уведомление в ТГ
+          await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: cb.id, text: `Манера изменена на: ${selectedName}` })
+          });
+
+          // Подтверждение сообщением
+          await sendMessage(cb.message.chat.id, `✅ манера речи успешно изменена на: <b>${selectedName}</b>`, null, 'HTML');
+        }
+      }
+      return res.status(200).send('OK');
+    }
+
     // 1. НОВОЕ СООБЩЕНИЕ В ЛС
     if (update.business_message) {
       const msg = update.business_message;
@@ -174,6 +242,36 @@ export default async function handler(req, res) {
         // Запоминаем время твоей активности в сети
         lastAdminActivity = Date.now();
 
+        // ВЫЗОВ КНОПОК СМЕНЫ МАНЕРЫ РЕЧИ
+        if (text === '/style' || text.toLowerCase() === 'сменить манеру речи' || text === '/манера') {
+          const keyboard = {
+            inline_keyboard: [
+              [{ text: "😎 Обычный пацан", callback_data: "style_default" }],
+              [{ text: "🌸 Анимешник (ня)", callback_data: "style_anime" }],
+              [{ text: "🔥 Дерзкий школьник (13 лет)", callback_data: "style_kid" }]
+            ]
+          };
+          await sendMessage(chatId, "🎭 <b>выбери манеру речи:</b>", connId, 'HTML', keyboard);
+          return res.status(200).send('OK');
+        }
+
+        // БЫСТРЫЕ КОМАНДЫ ПЕРЕКЛЮЧЕНИЯ
+        if (text === '/style default') {
+          await setState(TELEGRAM_TOKEN, { style: 'default' });
+          await sendMessage(chatId, "✅ манера речи: обычный пацан 😎", connId);
+          return res.status(200).send('OK');
+        }
+        if (text === '/style anime') {
+          await setState(TELEGRAM_TOKEN, { style: 'anime' });
+          await sendMessage(chatId, "✅ манера речи: анимешник 🌸", connId);
+          return res.status(200).send('OK');
+        }
+        if (text === '/style kid') {
+          await setState(TELEGRAM_TOKEN, { style: 'kid' });
+          await sendMessage(chatId, "✅ манера речи: дерзкий пацанчик (13 лет) 🔥", connId);
+          return res.status(200).send('OK');
+        }
+
         if (text === '/off') {
           await sendMessage(chatId, "🔴 автоответчик выключен", connId);
           return res.status(200).send('OK');
@@ -186,7 +284,7 @@ export default async function handler(req, res) {
 
         // ОСТАНОВКА ТРОЛЛИНГА
         if (text === '/troll off' || text === '/troll of' || text === '/troll stop') {
-          await setTrollState(TELEGRAM_TOKEN, false);
+          await setState(TELEGRAM_TOKEN, { troll: false });
           await sendMessage(chatId, "🛑 троллинг остановлен", connId);
           return res.status(200).send('OK');
         }
@@ -209,8 +307,8 @@ export default async function handler(req, res) {
               return res.status(200).send('OK');
             }
 
-            // Ставим флаг работы
-            await setTrollState(TELEGRAM_TOKEN, true);
+            // Ставим флаг работы троллинга
+            await setState(TELEGRAM_TOKEN, { troll: true });
             await sendMessage(chatId, "🚀 троллинг запущен", connId);
 
             // Порция слов для отправки
@@ -219,8 +317,8 @@ export default async function handler(req, res) {
             for (let i = 0; i < wordsToSend.length; i++) {
               // Каждые 2 слова проверяем, не отправлена ли команда остановки
               if (i > 0 && i % 2 === 0) {
-                const active = await getTrollState(TELEGRAM_TOKEN);
-                if (!active) {
+                const currentState = await getState(TELEGRAM_TOKEN);
+                if (!currentState.troll) {
                   break; // Прерываем спам
                 }
               }
@@ -229,7 +327,7 @@ export default async function handler(req, res) {
               await sleep(120); // Задержка для предотвращения лимитов Telegram
             }
 
-            await setTrollState(TELEGRAM_TOKEN, false);
+            await setState(TELEGRAM_TOKEN, { troll: false });
 
           } catch (err) {
             await sendMessage(chatId, `⚠️ ошибка при троллинге: ${err.message}`, connId);
@@ -249,8 +347,11 @@ export default async function handler(req, res) {
         return res.status(200).send('OK');
       }
 
-      // Отправка ответа ИИ
-      const aiReply = await queryOpenRouter(text, OPENROUTER_API_KEY, ADMIN_ID, sendMessage);
+      // Получаем текущие настройки состояния
+      const currentState = await getState(TELEGRAM_TOKEN);
+
+      // Отправка ответа ИИ с учетом манеры речи
+      const aiReply = await queryOpenRouter(text, OPENROUTER_API_KEY, ADMIN_ID, sendMessage, currentState.style);
 
       if (aiReply) {
         await sendMessage(chatId, aiReply, connId);
