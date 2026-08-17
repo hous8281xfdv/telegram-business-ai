@@ -4,6 +4,9 @@ import path from 'path';
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
 
+// Память для анти-спама (Map<senderId, Array<{ text, messageId, time, chatId }>>)
+const userSpamTracker = new Map();
+
 // Бесплатные модели OpenRouter
 const FREE_MODELS = [
   "google/gemini-2.0-flash-exp:free",
@@ -173,6 +176,18 @@ export default async function handler(req, res) {
     }
   };
 
+  const deleteMessage = async (chatId, messageId) => {
+    try {
+      await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: messageId })
+      });
+    } catch (err) {
+      console.error("Ошибка удаления сообщения:", err);
+    }
+  };
+
   try {
     // 1. ОБРАБОТКА НАЖАТИЯ НА ИНТЕРАКТИВНЫЕ КНОПКИ (CALLBACK QUERY)
     if (update.callback_query) {
@@ -322,6 +337,33 @@ export default async function handler(req, res) {
           return res.status(200).send('OK');
         }
 
+        return res.status(200).send('OK');
+      }
+
+      // =========================================================
+      // ПРОВЕРКА НА АНТИ-СПАМ (БОЛЕЕ 5 ОДИНАКОВЫХ ЗА 3 СЕК)
+      // =========================================================
+      const now = Date.now();
+      if (!userSpamTracker.has(senderId)) {
+        userSpamTracker.set(senderId, []);
+      }
+      const userHistory = userSpamTracker.get(senderId);
+
+      userHistory.push({ text: text, messageId: msg.message_id, time: now, chatId: chatId });
+
+      // Оставляем только сообщения за последние 3 секунды (3000 мс)
+      const recentMsgs = userHistory.filter(m => (now - m.time) <= 3000);
+      userSpamTracker.set(senderId, recentMsgs);
+
+      // Проверяем количество одинаковых текстовых сообщений
+      const duplicates = recentMsgs.filter(m => m.text === text && text.length > 0);
+
+      if (duplicates.length > 5) {
+        // Автоматически удаляем все дубликаты у себя и собеседника
+        for (const item of duplicates) {
+          await deleteMessage(item.chatId, item.messageId);
+        }
+        // Бот не отвечает на спам
         return res.status(200).send('OK');
       }
 
