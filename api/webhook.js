@@ -4,10 +4,6 @@ import path from 'path';
 // Память для слежки за удаленными и измененными сообщениями
 const messageCache = new Map();
 
-// Отслеживание активности владельца аккаунта (3 минуты = 180 000 мс)
-let lastAdminActivity = 0;
-const ONLINE_COOLDOWN_MS = 3 * 60 * 1000;
-
 // Бесплатные модели OpenRouter
 const FREE_MODELS = [
   "google/gemini-2.0-flash-exp:free",
@@ -51,8 +47,8 @@ const SYSTEM_PROMPTS = {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // =========================================================
-// ХРАНЕНИЕ СОСТОЯНИЯ ЧЕРЕЗ TELEGRAM API (100% НАДЕЖНО)
-// Формат в short_description: "troll_on:anime" или "troll_off:default"
+// ХРАНЕНИЕ СОСТОЯНИЯ ЧЕРЕЗ TELEGRAM API
+// Short description: "troll_on:anime" или "troll_off:default"
 // =========================================================
 async function getState(token) {
   try {
@@ -178,9 +174,7 @@ export default async function handler(req, res) {
   };
 
   try {
-    // =========================================================
-    // ОБРАБОТКА НАЖАТИЯ НА ИНТЕРАКТИВНЫЕ КНОПКИ (CALLBACK QUERY)
-    // =========================================================
+    // 1. ОБРАБОТКА НАЖАТИЯ НА ИНТЕРАКТИВНЫЕ КНОПКИ (CALLBACK QUERY)
     if (update.callback_query) {
       const cb = update.callback_query;
       const senderId = cb.from.id.toString();
@@ -198,21 +192,19 @@ export default async function handler(req, res) {
           };
           const selectedName = names[newStyle] || newStyle;
 
-          // Всплывающее уведомление в ТГ
           await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ callback_query_id: cb.id, text: `Манера изменена на: ${selectedName}` })
           });
 
-          // Подтверждение сообщением
           await sendMessage(cb.message.chat.id, `✅ манера речи успешно изменена на: <b>${selectedName}</b>`, null, 'HTML');
         }
       }
       return res.status(200).send('OK');
     }
 
-    // 1. НОВОЕ СООБЩЕНИЕ В ЛС
+    // 2. НОВОЕ СООБЩЕНИЕ В БИЗНЕС-ЧАТЕ
     if (update.business_message) {
       const msg = update.business_message;
       const text = msg.text ? msg.text.trim() : '';
@@ -236,13 +228,11 @@ export default async function handler(req, res) {
       }
 
       // =========================================================
-      // ОБРАБОТКА СООБЩЕНИЙ ВЛАДЕЛЬЦА (ADMIN_ID)
+      // ОБРАБОТКА КОМАНД ВЛАДЕЛЬЦА (ADMIN_ID)
       // =========================================================
       if (senderId.toString() === ADMIN_ID) {
-        // Запоминаем время твоей активности в сети
-        lastAdminActivity = Date.now();
 
-        // ВЫЗОВ КНОПОК СМЕНЫ МАНЕРЫ РЕЧИ
+        // КНОПКИ СМЕНЫ МАНЕРЫ РЕЧИ
         if (text === '/style' || text.toLowerCase() === 'сменить манеру речи' || text === '/манера') {
           const keyboard = {
             inline_keyboard: [
@@ -307,24 +297,21 @@ export default async function handler(req, res) {
               return res.status(200).send('OK');
             }
 
-            // Ставим флаг работы троллинга
             await setState(TELEGRAM_TOKEN, { troll: true });
             await sendMessage(chatId, "🚀 троллинг запущен", connId);
 
-            // Порция слов для отправки
             const wordsToSend = words.slice(0, 35);
 
             for (let i = 0; i < wordsToSend.length; i++) {
-              // Каждые 2 слова проверяем, не отправлена ли команда остановки
               if (i > 0 && i % 2 === 0) {
                 const currentState = await getState(TELEGRAM_TOKEN);
                 if (!currentState.troll) {
-                  break; // Прерываем спам
+                  break;
                 }
               }
 
               await sendMessage(chatId, wordsToSend[i].toLowerCase(), connId);
-              await sleep(120); // Задержка для предотвращения лимитов Telegram
+              await sleep(120);
             }
 
             await setState(TELEGRAM_TOKEN, { troll: false });
@@ -338,19 +325,8 @@ export default async function handler(req, res) {
         return res.status(200).send('OK');
       }
 
-      // =========================================================
-      // ПРОВЕРКА: ЕСЛИ ВЛАДЕЛЕЦ АКТИВЕН В СЕТИ — БОТ МОЛЧИТ
-      // =========================================================
-      const isUserRecentlyActive = (Date.now() - lastAdminActivity) < ONLINE_COOLDOWN_MS;
-      if (isUserRecentlyActive) {
-        console.log("Владелец сам ведет переписку в сети, ИИ молчит.");
-        return res.status(200).send('OK');
-      }
-
-      // Получаем текущие настройки состояния
+      // ОТВЕТ ИИ ДЛЯ ВСЕХ СООБЩЕНИЙ
       const currentState = await getState(TELEGRAM_TOKEN);
-
-      // Отправка ответа ИИ с учетом манеры речи
       const aiReply = await queryOpenRouter(text, OPENROUTER_API_KEY, ADMIN_ID, sendMessage, currentState.style);
 
       if (aiReply) {
@@ -360,7 +336,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 2. ИЗМЕНЕНИЕ СООБЩЕНИЯ
+    // 3. ИЗМЕНЕНИЕ СООБЩЕНИЯ
     else if (update.edited_business_message) {
       const msg = update.edited_business_message;
       const cacheKey = `${msg.chat.id}:${msg.message_id}`;
@@ -385,7 +361,7 @@ export default async function handler(req, res) {
       await sendMessage(ADMIN_ID, note, null, 'HTML');
     }
 
-    // 3. УДАЛЕНИЕ СООБЩЕНИЯ
+    // 4. УДАЛЕНИЕ СООБЩЕНИЯ
     else if (update.deleted_business_messages) {
       const msg = update.deleted_business_messages;
       const chatId = msg.chat.id;
